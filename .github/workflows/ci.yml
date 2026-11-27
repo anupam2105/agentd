@@ -82,6 +82,10 @@ jobs:
         working-directory: sdk/python
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
@@ -89,7 +93,24 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
-      - run: pytest -q
+      - name: pytest (against a real agentd binary and Docker sandbox)
+        env:
+          AGENTD_DOCKER_TESTS: "1"
+        run: pytest -q
+
+  docker-integration:
+    name: Docker sandbox integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Sandbox tests against the runner's Docker daemon
+        env:
+          AGENTD_DOCKER_TESTS: "1"
+        run: go test -count=1 -run TestDockerIntegration -v ./internal/sandbox/
 
   vuln:
     name: Vulnerability scan
