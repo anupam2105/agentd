@@ -150,10 +150,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only our artifacts: build-push-action also uploads a build record.
       - uses: actions/download-artifact@v4
         with:
+          name: binaries
           path: artifacts
-          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: artifacts
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
