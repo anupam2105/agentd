@@ -1,0 +1,74 @@
+# agentd configuration. Point AGENTD_CONFIG at this file.
+
+# USD per 1M tokens. Keys are model names or globs; the longest match wins.
+# The mock provider is always free. These prices are EXAMPLES — verify them
+# against your provider's current price list before relying on cost budgets.
+# A run with max_cost_usd refuses LLM calls to models without pricing.
+pricing:
+  "claude-sonnet-4*": { input: 3.00, output: 15.00 }
+  "claude-haiku-4*": { input: 1.00, output: 5.00 }
+  "gpt-4.1*": { input: 2.00, output: 8.00 }
+  "gpt-4.1-mini*": { input: 0.40, output: 1.60 }
+
+# Tools run in throwaway Docker containers: no network unless network: true,
+# read-only root filesystem, all capabilities dropped, non-root user, memory,
+# CPU, PID and wall-clock limits. The command is a list of Go templates over
+# the tool input; the raw input JSON is also in $AGENTD_TOOL_INPUT.
+tools:
+  shell:
+    description: Run a POSIX shell command in an isolated Alpine container (no network). Returns exit code, stdout and stderr.
+    image: alpine:3.22
+    command: ["sh", "-c", "{{.command}}"]
+    timeout: 30s
+    memory: 128m
+    cpus: 0.5
+    input_schema:
+      type: object
+      required: [command]
+      properties:
+        command: { type: string, description: Shell command to run }
+      examples:
+        - { command: "uname -a && cat /etc/os-release | head -2 && df -h / | tail -1" }
+
+  http_get:
+    description: Fetch a URL over HTTPS and return the first 64 KiB of the body.
+    image: curlimages/curl:8.15.0
+    command: ["curl", "-fsSL", "--max-time", "20", "--proto", "=https", "{{.url}}"]
+    network: true
+    timeout: 30s
+    input_schema:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, description: HTTPS URL to fetch }
+      examples:
+        - { url: "https://www.githubstatus.com/api/v2/status.json" }
+
+# First matching rule wins; otherwise the per-kind default applies.
+# Actions: allow | deny | require_approval.
+policy:
+  defaults:
+    llm: allow
+    tool: deny # tools must be explicitly allowed
+    record: allow
+  rules:
+    - name: destructive-shell
+      kind: tool
+      tool: shell
+      input:
+        command: '\b(rm|dd|mkfs|shutdown|reboot|kill|chmod|chown)\b'
+      action: require_approval
+      reason: potentially destructive command
+    - name: shell
+      kind: tool
+      tool: shell
+      action: allow
+    - name: network-egress
+      kind: tool
+      tool: http_get
+      action: require_approval
+      reason: tool reaches the network
+    - name: expensive-llm-call
+      kind: llm
+      min_cost_usd: 0.50
+      action: require_approval
