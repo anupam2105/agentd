@@ -1,0 +1,184 @@
+{{- include "agentd.assertConfig" . -}}
+{{- $dockerHost := include "agentd.dockerHost" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentd.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentd.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # SQLite is single-writer: exactly one pod, and the old one stops before the
+  # new one opens the journal.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agentd.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentd.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ toYaml .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "agentd.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: agentd
+          image: {{ include "agentd.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- if eq .Values.sandbox.mode "hostSocket" }}
+            # The node's docker.sock is root:docker or root:root.
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            {{- end }}
+          ports:
+            - name: {{ .Values.service.portName }}
+              containerPort: 7700
+              protocol: TCP
+          env:
+            - name: AGENTD_HTTP_ADDR
+              value: ":7700"
+            - name: AGENTD_LOG_LEVEL
+              value: {{ .Values.server.logLevel | quote }}
+            - name: AGENTD_LOG_FORMAT
+              value: {{ .Values.server.logFormat | quote }}
+            - name: AGENTD_STEP_LEASE
+              value: {{ .Values.server.stepLease | quote }}
+            - name: AGENTD_LLM_TIMEOUT
+              value: {{ .Values.server.llmTimeout | quote }}
+            - name: AGENTD_DB_PATH
+              value: /data/agentd.db
+            - name: AGENTD_CONFIG
+              value: /etc/agentd/agentd.yaml
+            {{- with .Values.server.publicURL }}
+            - name: AGENTD_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $dockerHost }}
+            - name: AGENTD_DOCKER_HOST
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.tracing.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ $.Values.tracing.serviceName | quote }}
+            {{- end }}
+            {{- include "agentd.secretEnv" (list . "AGENTD_API_TOKEN" "api-token") | nindent 12 }}
+            {{- include "agentd.secretEnv" (list . "AGENTD_ANTHROPIC_API_KEY" "anthropic-api-key") | nindent 12 }}
+            {{- include "agentd.secretEnv" (list . "AGENTD_OPENAI_API_KEY" "openai-api-key") | nindent 12 }}
+            {{- include "agentd.secretEnv" (list . "AGENTD_SLACK_WEBHOOK_URL" "slack-webhook-url") | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /etc/agentd
+              readOnly: true
+            {{- if eq .Values.sandbox.mode "dind" }}
+            - name: dind-sock
+              mountPath: /var/run/dind
+            {{- else if eq .Values.sandbox.mode "hostSocket" }}
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: {{ .Values.service.portName }}
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: {{ .Values.service.portName }}
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        {{- if eq .Values.sandbox.mode "dind" }}
+        # Tool containers run inside this daemon, not on the node's runtime.
+        - name: dind
+          image: {{ .Values.sandbox.dind.image }}
+          args:
+            - --host=unix:///var/run/dind/docker.sock
+            - --group={{ .Values.podSecurityContext.fsGroup | default 65532 }}
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: dind-sock
+              mountPath: /var/run/dind
+            - name: dind-storage
+              mountPath: /var/lib/docker
+          resources:
+            {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "agentd.configMap" . }}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "agentd.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if eq .Values.sandbox.mode "dind" }}
+        - name: dind-sock
+          emptyDir: {}
+        - name: dind-storage
+          emptyDir:
+            sizeLimit: {{ .Values.sandbox.dind.storageSize }}
+        {{- else if eq .Values.sandbox.mode "hostSocket" }}
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

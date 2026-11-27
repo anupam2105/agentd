@@ -1,0 +1,182 @@
+# Default values for agentd. Override with `--values` or `--set`.
+
+image:
+  repository: ghcr.io/anupam2105/agentd
+  tag: ""                # Defaults to Chart.appVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# agentd keeps its run/step journal in an embedded SQLite file, so it runs as a
+# single replica with a Recreate strategy. This is not a configurable value.
+
+# --- Server settings ---
+server:
+  logLevel: info         # debug | info | warn | error
+  logFormat: json        # json | text
+  stepLease: 10m         # a "running" step is re-executable after this long
+  llmTimeout: 2m
+  publicURL: ""          # used in approval notifications, e.g. https://agentd.example.com
+
+# --- Secrets ---
+# Reference ONE existing Secret holding any of these (all optional) keys:
+#   api-token            bearer token required on /v1 (strongly recommended)
+#   anthropic-api-key    enables the Anthropic provider
+#   openai-api-key       enables the OpenAI(-compatible) provider
+#   slack-webhook-url    approval notifications
+# Without a provider key only the free "mock" model is available.
+existingSecret: ""
+
+# --- Tools, pricing and policy (agentd.yaml) ---
+# Rendered into a ConfigMap. Set existingConfigMap to use your own (key: agentd.yaml).
+existingConfigMap: ""
+config:
+  pricing: {}
+  tools:
+    shell:
+      description: Run a POSIX shell command in an isolated Alpine container (no network).
+      image: alpine:3.22
+      command: ["sh", "-c", "{{.command}}"]
+      timeout: 30s
+      memory: 128m
+      cpus: 0.5
+      input_schema:
+        type: object
+        required: [command]
+        properties:
+          command: { type: string, description: Shell command to run }
+        examples:
+          - { command: "uname -a && df -h / | tail -1" }
+  policy:
+    defaults:
+      llm: allow
+      tool: deny
+      record: allow
+    rules:
+      - name: destructive-shell
+        kind: tool
+        tool: shell
+        input:
+          command: '\b(rm|dd|mkfs|shutdown|reboot|kill|chmod|chown)\b'
+        action: require_approval
+        reason: potentially destructive command
+      - name: shell
+        kind: tool
+        tool: shell
+        action: allow
+
+# --- Tool sandbox (where tool containers run) ---
+# dind:       a Docker-in-Docker sidecar in the pod (privileged). Works on any
+#             cluster; tool containers are isolated from the node's runtime.
+# hostSocket: mount the node's /var/run/docker.sock (nodes must run Docker;
+#             root-equivalent on the node).
+# external:   a remote Docker Engine API (sandbox.external.dockerHost).
+# none:       no sandbox; tool steps fail. Use when config.tools is empty.
+sandbox:
+  mode: dind
+  dind:
+    image: docker:29.10.1-dind
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 2Gi
+    storageSize: 10Gi    # emptyDir sizeLimit for /var/lib/docker (image cache)
+  external:
+    dockerHost: ""       # e.g. tcp://docker-sandbox.agents.svc:2375
+
+# --- Tracing (OTLP/HTTP) ---
+tracing:
+  otlpEndpoint: ""       # e.g. http://otel-collector.observability:4318
+  serviceName: agentd
+
+# --- Persistence (SQLite run/step journal) ---
+persistence:
+  enabled: true
+  size: 2Gi
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  existingClaim: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+service:
+  type: ClusterIP
+  port: 7700
+  portName: http
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+# Matches the Dockerfile: nonroot uid 65532.
+podSecurityContext:
+  fsGroup: 65532
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Keep the API cluster-internal unless you have put auth in front of it.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: agentd.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Prometheus Operator ServiceMonitor (requires the CRDs).
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  interval: 15s
+  scrapeTimeout: 10s
+  honorLabels: false
+  labels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+commonLabels: {}
+commonAnnotations: {}
+
+# Raw env list appended after the chart-derived variables.
+extraEnv: []

@@ -32,7 +32,7 @@ services:
       AGENTD_SLACK_WEBHOOK_URL: ${AGENTD_SLACK_WEBHOOK_URL:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       OTEL_SERVICE_NAME: agentd
-      LOG_LEVEL: info
+      AGENTD_LOG_LEVEL: info
     volumes:
       - ../agentd.example.yaml:/etc/agentd/agentd.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock

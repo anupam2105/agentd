@@ -43,4 +43,4 @@ __all__ = [
     "__version__",
     "tool_result_block",
 ]
-__version__ = "0.1.0"
+__version__ = "0.1.0a1"

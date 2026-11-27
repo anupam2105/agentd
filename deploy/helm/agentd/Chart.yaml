@@ -1,0 +1,31 @@
+apiVersion: v2
+name: agentd
+description: Durable, sandboxed, policy-governed runtime for AI agents
+type: application
+
+# Chart version — bumped independently from the application version.
+version: 0.1.0
+
+# App version — the container image tag this chart is calibrated against.
+appVersion: "v0.1.0-alpha"
+
+kubeVersion: ">=1.26.0-0"
+
+home: https://github.com/anupam2105/agentd
+sources:
+  - https://github.com/anupam2105/agentd
+
+maintainers:
+  - name: anupam2105
+    url: https://github.com/anupam2105
+
+keywords:
+  - ai-agents
+  - llm
+  - durable-execution
+  - sandbox
+  - policy
+  - opentelemetry
+
+annotations:
+  category: AI

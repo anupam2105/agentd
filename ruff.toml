@@ -1,0 +1,3 @@
+# Ruff settings for files outside sdk/python (examples/). Matches sdk/python/pyproject.toml.
+line-length = 100
+target-version = "py311"

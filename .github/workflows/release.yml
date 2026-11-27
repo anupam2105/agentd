@@ -1,0 +1,185 @@
+name: Release
+
+# On a v* tag:
+#   - multi-arch container image -> ghcr.io/<owner>/agentd
+#   - agentd binaries (linux/darwin, amd64/arm64) + Python SDK dists -> GitHub Release
+#   - Python SDK -> PyPI (only when the repo variable PYPI_PUBLISH is "true";
+#     uses PyPI trusted publishing, no token needed)
+#
+# workflow_dispatch rebuilds an existing tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish (e.g. v0.1.0-alpha)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      is_stable: ${{ steps.v.outputs.is_stable }}
+    steps:
+      - id: v
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Non-stable tags (alpha, beta, rc) must not move `:latest`.
+          IS_STABLE=true
+          case "$VERSION" in
+            *alpha*|*beta*|*rc*) IS_STABLE=false ;;
+          esac
+          echo "is_stable=$IS_STABLE" >> "$GITHUB_OUTPUT"
+
+  image:
+    name: Publish container
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.version }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.is_stable == 'true' }}
+          labels: |
+            org.opencontainers.image.title=agentd
+            org.opencontainers.image.description=Durable, sandboxed, policy-governed runtime for AI agents
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=Apache-2.0
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ needs.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  binaries:
+    name: Build binaries
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.version }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cross-compile
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            name="agentd_${VERSION}_${os}_${arch}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.buildVersion=${VERSION}" -o "dist/$name/agentd" ./cmd/agentd
+            cp LICENSE README.md agentd.example.yaml "dist/$name/"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          done
+          (cd dist && sha256sum ./*.tar.gz > checksums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+
+  python:
+    name: Build Python SDK
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.version }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Build sdist and wheel
+        working-directory: sdk/python
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: sdk/python/dist/*
+
+  github-release:
+    name: GitHub Release
+    needs: [version, image, binaries, python]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          IS_STABLE: ${{ needs.version.outputs.is_stable }}
+        run: |
+          flags=(--repo "$GITHUB_REPOSITORY" --title "$VERSION" --generate-notes)
+          [ "$IS_STABLE" = "true" ] || flags+=(--prerelease)
+          notes="Container: \`docker pull ghcr.io/${GITHUB_REPOSITORY}:${VERSION}\`"
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$VERSION" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$VERSION" artifacts/* "${flags[@]}" --notes "$notes"
+          fi
+
+  pypi:
+    name: Publish to PyPI
+    needs: [version, python]
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

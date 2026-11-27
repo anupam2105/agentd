@@ -93,6 +93,8 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
+      - name: Lint example agent
+        run: ruff check ../../examples && ruff format --check ../../examples
       - name: pytest (against a real agentd binary and Docker sandbox)
         env:
           AGENTD_DOCKER_TESTS: "1"
@@ -111,6 +113,21 @@ jobs:
         env:
           AGENTD_DOCKER_TESTS: "1"
         run: go test -count=1 -run TestDockerIntegration -v ./internal/sandbox/
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: Lint and render every sandbox mode
+        run: |
+          helm lint deploy/helm/agentd
+          for mode in dind hostSocket none; do
+            helm template t deploy/helm/agentd --set sandbox.mode=$mode > /dev/null
+          done
+          helm template t deploy/helm/agentd --set sandbox.mode=external \
+            --set sandbox.external.dockerHost=tcp://sandbox:2375 > /dev/null
 
   vuln:
     name: Vulnerability scan

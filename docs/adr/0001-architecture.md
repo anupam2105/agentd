@@ -26,20 +26,30 @@ Option 3.
   backend may follow behind the same interface.
 - **SDK:** Python only, standard-library HTTP so it has zero runtime dependencies.
 - **Step identity:** `(run_id, step_key)`. The SDK derives `step_key` from call order
-  (`llm#3`, `tool:shell#7`) unless the caller passes an explicit key. Agent code must therefore be
+  (`1:llm`, `2:tool:shell`, `3:record`). Agent code must therefore be
   deterministic *between* steps, the same contract as Temporal workflows. The journal stores a
   hash of each step's request; a replayed step with a different request fails loudly instead of
   silently returning a stale result.
-- **Step lifecycle:** `pending → (awaiting_approval) → running → completed | failed`. The result is
-  committed before it is returned, so a client that crashes after the commit gets the recorded
-  result on retry.
-- **Approvals** are steps in `awaiting_approval`; the SDK long-polls until a human decides.
-- **Budgets** are checked before a provider call using a max-tokens estimate, then reconciled with
-  reported usage.
+- **Step lifecycle:** `(awaiting_approval → approved) → running → completed | failed | denied`.
+  The result is committed before it is returned, so a client that crashes after the commit gets
+  the recorded result on retry. Retryable failures (provider 429/5xx, Docker unreachable) are
+  not terminal: the same step key executes again on the next call.
+- **Leases:** a step stuck in `running` (agentd crashed mid-call) can be re-executed after
+  `AGENTD_STEP_LEASE`; a late result from the old attempt is discarded.
+- **Approvals** are steps in `awaiting_approval`; the SDK polls until a human decides.
+- **Budgets** reserve the worst case (input estimate + `max_tokens`) before a provider call,
+  inside the same transaction that admits the step, then reconcile with reported usage.
+  Concurrent steps therefore cannot overshoot together.
+- **Policy** runs before admission. Approvals and denials are recorded on the step, so replays
+  never re-ask a human.
+- **Tracing:** the trace ID is derived from the run ID, so every process that touches a run emits
+  spans into the same trace without propagating context through the SDK.
 
 ## Consequences
 
 - Crash recovery is "run the function again"; no worker coordination is needed in v0.1.
-- Non-deterministic agent code (e.g. branching on `random()` outside a step) breaks replay; the
-  SDK will offer `run.side_effect()` to journal such values.
+- Non-deterministic agent code (e.g. branching on `random()` outside a step) breaks replay;
+  `run.side_effect()` journals such values.
+- SQLite means one replica. Throughput is bounded by a single writer, which is fine for agent
+  workloads dominated by LLM latency. A Postgres store would lift this.
 - Tools must be invoked through agentd to be sandboxed; agentd cannot police code that bypasses it.

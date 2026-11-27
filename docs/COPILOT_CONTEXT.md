@@ -19,19 +19,34 @@ co-pilot), both under `~/personal/`.
 
 | # | Milestone | Status |
 |---|---|---|
-| M0 | Foundation: server (health/ready/metrics/version), config, logging, Python SDK skeleton, CI (Go lint/test/build/vuln/secrets + Python ruff/mypy/pytest), Dockerfile, Justfile | ✅ Done (2026-11-26) |
-| M1 | Runs + step journal in SQLite; `POST /v1/runs`, `POST /v1/runs/{id}/steps` with replay + request-hash check; bearer auth; SDK `client.start()`, `run.step()` | ⏳ Next |
-| M2 | LLM gateway: provider interface (Anthropic, OpenAI-compatible); per-run token/cost/step budgets; SDK `run.llm()` | |
-| M3 | Docker sandbox tools: no network by default, read-only rootfs, CPU/mem/pids/time caps, output caps; SDK `run.tool()` | |
-| M4 | Policy (YAML: allow/deny/require_approval by tool, args, cost); approvals API + `agentd approve` CLI + Slack | |
-| M5 | OpenTelemetry traces (GenAI semconv), Prometheus metrics, docker-compose + Grafana demo | |
-| M6 | Helm chart, multi-arch ghcr.io images, PyPI publish, v0.1.0-alpha, launch post | |
+| M0 | Foundation: server, config, logging, SDK skeleton, CI, Dockerfile, Justfile | ✅ 2026-11-26 |
+| M1 | Runs + step journal (SQLite), replay, request-hash nondeterminism check, leases, bearer auth | ✅ 2026-11-27 |
+| M2 | LLM gateway (Anthropic, OpenAI-compatible, mock) + step/token/cost budgets with reservations | ✅ 2026-11-27 |
+| M3 | Docker sandbox tools (no network, ro rootfs, caps dropped, uid 65534, limits) | ✅ 2026-11-27 |
+| M4 | Policy (allow/deny/require_approval) + approvals API/CLI/Slack | ✅ 2026-11-27 |
+| M5 | OTel traces (GenAI semconv, deterministic trace per run), metrics, compose + Grafana demo | ✅ 2026-11-27 |
+| M6 | Helm chart (dind/hostSocket/external), release workflow (GHCR, binaries, PyPI), docs, v0.1.0-alpha | ✅ 2026-11-27 |
+
+## Layout
+
+- `cmd/agentd`: serve + CLI dispatch. `internal/engine`: ExecuteStep/Decide/budgets/leases (core).
+- `internal/{store,llm,sandbox,policy,agentcfg,tracing,notify,observability,httpserver,cli,config}`.
+- `sdk/python` (dist name `agentd-client`, import `agentd`), `examples/sre_agent.py`,
+  `deploy/{docker-compose.yml,helm/agentd,grafana,prometheus}`.
+
+## Gotchas
+
+- SQLite has MaxOpenConns(1): never call Store reader methods inside an `InTx` closure (deadlock).
+- The mock LLM calls the first tool with `input_schema.examples[0]`, so give demo tools examples.
+- Jaeger 2.23 removed the v1 query API that Grafana 11's Jaeger datasource uses; the demo links
+  to the Jaeger UI instead.
+- OrbStack: `DOCKER_HOST=$(docker context inspect -f '{{.Endpoints.docker.Host}}')`.
 
 ## Conventions
 
 - Mirror shipmetrics/pageguard: Justfile targets, CI gate structure, distroless Dockerfile,
   `/healthz` `/readyz` `/metrics`, env config with `AGENTD_` prefix, private Prometheus registry,
   bounded route labels, ADRs in `docs/adr`.
-- Default port 7700 (8080/3000/9090 are used by the other projects' demo stacks).
+- Default port 7700. Demo ports: Jaeger 26686, Prometheus 29090, Grafana 23000 (avoid 3000/8080/9090/13000).
 - Safety defaults are non-negotiable: sandbox has no network unless policy grants it; unknown
   tools are denied; budgets fail closed.

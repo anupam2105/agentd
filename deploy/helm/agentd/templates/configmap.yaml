@@ -1,0 +1,12 @@
+{{- if not .Values.existingConfigMap -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentd.configMap" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentd.labels" . | nindent 4 }}
+data:
+  agentd.yaml: |
+    {{- toYaml .Values.config | nindent 4 }}
+{{- end }}

@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "agentd.fullname" . }}-test-connection"
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentd.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: curl
+      image: curlimages/curl:8.15.0
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          BASE="http://{{ include "agentd.fullname" . }}:{{ .Values.service.port }}"
+          curl -sf "$BASE/healthz" | grep -q '"status":"ok"'
+          curl -sf "$BASE/readyz"  | grep -q '"status":"ready"'
+          curl -sf "$BASE/v1/version" | grep -q '"api":"v1"'
+          curl -sf "$BASE/metrics" | grep -q "agentd_build_info"

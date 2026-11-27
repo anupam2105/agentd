@@ -66,14 +66,15 @@ func (d *Docker) do(ctx context.Context, method, path string, query url.Values, 
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, rdr)
+	// The host is the operator-configured Docker endpoint, not user input.
+	req, err := http.NewRequestWithContext(ctx, method, u, rdr) //nolint:gosec // G704: see above
 	if err != nil {
 		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return d.client.Do(req)
+	return d.client.Do(req) //nolint:gosec // G704: operator-configured Docker endpoint
 }
 
 func apiError(resp *http.Response) error {

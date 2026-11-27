@@ -1,0 +1,31 @@
+agentd {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Reach the API from your laptop:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agentd.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  export AGENTD_URL=http://localhost:{{ .Values.service.port }}
+  agentd tools && agentd runs
+
+From pods in the cluster use:
+
+  AGENTD_URL=http://{{ include "agentd.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+{{- if not .Values.existingSecret }}
+
+WARNING: existingSecret is not set: the API has NO authentication and only the
+free "mock" model is available. Create a Secret with api-token (and
+anthropic-api-key / openai-api-key) and set existingSecret.
+{{- end }}
+{{- if eq .Values.sandbox.mode "dind" }}
+
+Tools run in a privileged Docker-in-Docker sidecar. See SECURITY.md for the
+trade-offs, or set sandbox.mode=external to use a dedicated sandbox host.
+{{- else if eq .Values.sandbox.mode "hostSocket" }}
+
+WARNING: sandbox.mode=hostSocket gives agentd root-equivalent access to the node.
+{{- end }}
+
+Run the chart's smoke test:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+Docs: https://github.com/anupam2105/agentd

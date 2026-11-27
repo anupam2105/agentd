@@ -38,21 +38,15 @@ REMEDIATION = "rm -rf /tmp/agentd-demo-cache && echo cache cleared"
 MAX_TURNS = 6
 
 
-def make_agent(
-    model: str, crash_after: int | None
-) -> Callable[[Run, Any], dict[str, Any]]:
+def make_agent(model: str, crash_after: int | None) -> Callable[[Run, Any], dict[str, Any]]:
     steps = 0
 
     def checkpoint(run: Run, what: str, replayed: bool) -> None:
         nonlocal steps
         steps += 1
-        print(
-            f"  [{steps}] {what} ({'replayed' if replayed else 'executed'})", flush=True
-        )
+        print(f"  [{steps}] {what} ({'replayed' if replayed else 'executed'})", flush=True)
         if crash_after is not None and steps >= crash_after:
-            print(
-                f"\n*** simulated crash after {steps} steps; re-run with --run-id {run.id}"
-            )
+            print(f"\n*** simulated crash after {steps} steps; re-run with --run-id {run.id}")
             sys.stdout.flush()
             os._exit(1)  # a hard crash: no cleanup, the run stays "running"
 
@@ -73,15 +67,11 @@ def make_agent(
             for call in resp.tool_calls:
                 try:
                     out = run.tool(call.name, call.input)
-                    checkpoint(
-                        run, f"tool {call.name} exit={out.exit_code}", out.replayed
-                    )
+                    checkpoint(run, f"tool {call.name} exit={out.exit_code}", out.replayed)
                     results.append(tool_result_block(call, out))
                 except StepDenied as e:
                     checkpoint(run, f"tool {call.name} denied ({e.code})", False)
-                    results.append(
-                        tool_result_block(call, f"denied: {e}", is_error=True)
-                    )
+                    results.append(tool_result_block(call, f"denied: {e}", is_error=True))
             messages.append({"role": "user", "content": results})
 
         print(f"\nsummary:\n{summary}\n", flush=True)
@@ -100,18 +90,12 @@ def make_agent(
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawTextHelpFormatter
-    )
-    p.add_argument(
-        "--run-id", help="name of the run; re-use it to resume (default: random)"
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    p.add_argument("--run-id", help="name of the run; re-use it to resume (default: random)")
     p.add_argument("--task", default="Check the host's OS, kernel and disk usage.")
     p.add_argument("--model", default=os.environ.get("AGENTD_MODEL", "mock"))
     p.add_argument("--crash-after", type=int, help="simulate a crash after N steps")
-    p.add_argument(
-        "--max-cost", type=float, default=0.50, help="USD budget for real models"
-    )
+    p.add_argument("--max-cost", type=float, default=0.50, help="USD budget for real models")
     args = p.parse_args()
 
     run_id = args.run_id or f"triage-{uuid.uuid4().hex[:8]}"
